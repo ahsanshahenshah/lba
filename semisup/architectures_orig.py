@@ -183,7 +183,7 @@ def stl10_model(inputs,
                     net = slim.conv2d(net, 128, [3, 3], scope='conv4')
                     net = slim.flatten(net, scope='flatten')
 
-                    with slim.arg_scope([slim.fully_connected], normalizer_fn=slim.batch_norm):
+                    with slim.arg_scope([slim.fully_connected], normalizer_fn=None):
                         emb = slim.fully_connected(
                             net, emb_size, activation_fn=None, scope='fc1')
     return emb
@@ -215,7 +215,6 @@ def mnist_model(inputs,
             [slim.conv2d, slim.fully_connected],
             activation_fn=tf.nn.elu,
             weights_regularizer=slim.l2_regularizer(l2_weight)):
-        print('print net',net)
         net = slim.conv2d(net, 32, [3, 3], scope='conv1_1')
         net = slim.conv2d(net, 32, [3, 3], scope='conv1_2')
         net = slim.max_pool2d(net, [2, 2], scope='pool1')  # 14
@@ -442,58 +441,6 @@ def alexnet_model(inputs,
         return alexnet_v2(inputs, is_training, emb_size)
 
 
-# A Resnet architecture from keras, see https://keras.io/applications/#resnet50
-# Can be used with the standard weights from He et al.
-# train_unsup2.py for an example
-# note: when using tf.global_var_intializer, the pretrained weights have to be loaded again
-# sets the global k_endpoint variable with the 2048-dimensional embedding vectors, useful for debugging
-# (e.g. for calculating k-means on the resnet embeddings)
-# resizes images to imagenet size, and applies standard preprocessing
-
-# if num_blocks is 0, gradients are not propagated through the net (only the embedding layer will be trained)
-
-from keras.applications.resnet50 import ResNet50
-from keras.applications.resnet50 import preprocess_input
-k_model = None
-k_endpoint = None
-
-def keras_resnet(inputs,
-                 is_training=True,
-                 emb_size=128,
-                 l2_weight=1e-4,
-                 img_shape=None,
-                 new_shape=None,
-                 image_summary=False,
-                 augmentation_function=None,
-                 num_blocks=None,
-                 dropout_keep_prob=1,
-                 batch_norm_decay=0.99,
-                 resnet_size=32):
-    global k_endpoint
-    global k_model
-
-    if k_model is None:
-        k_model = ResNet50(include_top=False)
-
-    inputs = tf.cast(inputs, tf.float32)
-    resized = tf.image.resize_images(inputs, (224, 224))
-    inputs = preprocess_input(resized)
-
-    resnet = k_model(inputs)
-    if k_endpoint is None:
-        k_endpoint = resnet
-
-    net = tf.contrib.slim.flatten(resnet)
-
-    if num_blocks == 0:
-        net = tf.stop_gradient(net)
-    net = tf.layers.dense(inputs=net, units=emb_size)
-
-    net = tf.identity(net, 'embeddings')
-    return net
-
-
-
 def Densenet_model(inputs,
                   is_training=True,
                   augmentation_function=None,
@@ -510,17 +457,20 @@ def Densenet_model(inputs,
 
     from keras.layers import Dense, Input, Conv2D, MaxPooling2D,Dropout,Flatten
     from keras.models import Sequential
+    inp = tf.keras.layers.Input(shape=(None, 28, 28))
+    #model = tf.keras.models.Sequential()
     inputs = tf.cast(inputs, tf.float32) / 255.0
-    model = tf.image.resize_images(inputs,(224,224))
-    #model = tf.image.grayscale_to_rgb(model)
+    model = tf.image.resize_images(inputs,(56,56))
+    model = tf.image.grayscale_to_rgb(model)
     model = tf.keras.applications.DenseNet121(include_top=False)(model)
 
-    model = tf.contrib.slim.flatten(model)
-    model = tf.stop_gradient(model)
-    model = tf.layers.dense(inputs=model, units=emb_size)
-    model = tf.identity(model, 'embeddings')
+    #model = tf.keras.layers.Conv2D(32, kernel_size=(3, 3),
+    #                 activation='relu')(model)
+    #model = tf.keras.layers.Conv2D(64, (3, 3), activation='relu')(model)
+    #model = tf.keras.layers.MaxPooling2D(pool_size=(2, 2))(model)
+    #model = tf.keras.layers.Dropout(0.25)(model)
+    model = tf.keras.layers.Flatten()(model)
+    model = tf.keras.layers.Dense(emb_size, activation='relu')(model)
     #model.summary()
     return model
     pass
-
-

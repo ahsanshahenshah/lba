@@ -39,10 +39,10 @@ flags.DEFINE_integer('sup_per_class', 10,
 flags.DEFINE_integer('sup_seed', -1,
                      'Integer random seed used for labeled set selection.')
 
-flags.DEFINE_integer('sup_per_batch', 10,
+flags.DEFINE_integer('sup_per_batch', 2,
                      'Number of labeled samples per class per batch.')
 
-flags.DEFINE_integer('unsup_batch_size', 100,
+flags.DEFINE_integer('unsup_batch_size', 20,
                      'Number of unlabeled samples per batch.')
 
 flags.DEFINE_integer('eval_interval', 500,
@@ -57,11 +57,12 @@ flags.DEFINE_float('decay_steps', 5000,
 
 flags.DEFINE_float('visit_weight', 1.0, 'Weight for visit loss.')
 
-flags.DEFINE_integer('max_steps', 20000, 'Number of training steps.')
+flags.DEFINE_integer('max_steps', 40000, 'Number of training steps.')
 
 flags.DEFINE_string('logdir', '/tmp/semisup_mnist', 'Training log path.')
-
-from tools import mnist as mnist_tools
+from importlib import import_module
+#from tools import mnist as mnist_tools
+mnist_tools = import_module('tools.mnist')
 
 NUM_LABELS = mnist_tools.NUM_LABELS
 IMAGE_SHAPE = mnist_tools.IMAGE_SHAPE

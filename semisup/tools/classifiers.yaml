@@ -1,0 +1,95 @@
+-
+    name: test_mobilenet_v2
+    dataset_dir: /data/Dropbox/Data_new/id_workplace/lviv_data/idscam-crops/train/
+    model_location: /data/workspace/deep_cv/data/ids-related/test_weights/mobilenet_v2.hdf5
+    classes: ['blaupunkt', 'blaupunkt-small', 'haribo', 'haribo-saft', 'varta-small']
+    input_shape: [224, 224, 3]
+    arch: 'mobilenet_v2'
+    network_type: 'fc_clr'
+    grayscale: False
+-
+    name: densenet_55_classes
+    dataset_dir: /data/Dropbox/Data_new/id_workplace/lviv_data/idscam-crops/train/
+    model_location: /data/workspace/deep_cv/data/ids-related/test_weights/densenet121_61_classes.hdf5
+    classes: ['papa_mixed_1#',
+               'mama_mm_9_2',
+               'papa_polyheador_2',
+               'papa_polyheador_6',
+               'papa_polyheador_S2',
+               'papa_cross_2#',
+               'mama_3_slash_8',
+               'papa_polyheador_1.5',
+               'mama_3_slash_16',
+               'mama_mm_10_2',
+               'mama_mm_7_2',
+               'mama_mm_7',
+               'papa_polyheador_4',
+               'blaupunkt',
+               'papa_mixed_T20',
+               'papa_cross_3#',
+               'haribo',
+               'papa_star_T15',
+               'papa_polyheador_5.5',
+               'blaupunkt-small',
+               'mama_mm_11_2',
+               'mama_5_slash_16',
+               'papa_polyheador_3',
+               'papa_star_T10',
+               'papa_mixed_6',
+               'mama_mm_9',
+               'papa_star_T40',
+               'mama_mm_11',
+               'mama_mm_6_2',
+               'haribo-saft',
+               'papa_star_AD',
+               'papa_polyheador_S3',
+               'mama_1_slash_4',
+               'papa_star_T27',
+               'mama_mm_12',
+               'papa_cross_1#',
+               'papa_cross_0#',
+               'papa_cross_4',
+               'mama_mm_12_2',
+               'papa_polyheador_5',
+               'papa_star_1#',
+               'papa_star_T20',
+               'varta-small',
+               'papa_star_0#',
+               'mama_7_slash_16',
+               'papa_mixed_T15',
+               'papa_cross_5',
+               'papa_star_2#',
+               'papa_star_T30',
+               'papa_mixed_3#',
+               'papa_polyheador_2.5',
+               'mama_mm_8',
+               'mama_mm_8_2',
+               'mama_mm_6',
+               'papa_cross_6',
+               'papa_cross_3',
+               'mama_mm_10',
+               'papa_mixed_2#',
+               'mama_1_slash_2',
+               'mama_11_slash_32',
+               'papa_star_T25']
+    input_shape: [224, 224, 3]
+    arch: 'densenet121'
+    network_type: 'fc_clr'
+    grayscale: False
+-
+    name: 'imagenetLV_10'
+    dataset_dir: /data/idscam-crops/train/
+    model_location: /data/workspace/deep_cv/data/ids-related/test_weights/densenet121_61_classes.hdf5
+    classes: ['blaupunkt','haribo',
+              'mama_1_slash_2',
+              'papa_polyheador_1.5',
+              'papa_star_1#',
+              'papa_star_AD',
+              'papa_mixed_T15',
+              'varta-small',
+              'papa_polyheador_6',
+              'mama_mm_8_2']
+    input_shape: [224, 224, 3]
+    arch: 'None'
+    network_type: 'fc_clr'
+    grayscale: False

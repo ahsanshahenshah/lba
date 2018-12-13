@@ -22,6 +22,7 @@ from __future__ import division
 from __future__ import print_function
 
 import sys
+import math
 from functools import partial
 from importlib import import_module
 
@@ -33,9 +34,14 @@ from tensorflow.python.platform import app
 from tensorflow.python.platform import flags
 from tensorflow.python.training import saver as tf_saver
 
+import hyperopt
+import numpy
+from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+from clr import cyclic_learning_rate
+
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('dataset', 'mnist', 'Which dataset to work on.')
+flags.DEFINE_string('dataset', 'imagenetLV', 'Which dataset to work on.')
 
 flags.DEFINE_string('target_dataset', None,
                     'If specified, perform domain adaptation using dataset as '
@@ -45,41 +51,46 @@ flags.DEFINE_string('target_dataset_split', 'unlabeled',
                     'Which split of the target dataset to use for domain '
                     'adaptation.')
 
-flags.DEFINE_string('architecture', 'mnist_model', 'Which network architecture '
+flags.DEFINE_string('architecture', 'stl10_model', 'Which network architecture '
                     'from architectures.py to use.')
 
-flags.DEFINE_integer('sup_per_class', 100,
+flags.DEFINE_integer('sup_per_class', 10,
                      'Number of labeled samples used per class in total.'
                      ' -1 = all')
 
-flags.DEFINE_integer('unsup_samples', -1,
+flags.DEFINE_integer('unsup_samples', 4000,
                      'Number of unlabeled samples used in total. -1 = all.')
 
-flags.DEFINE_integer('sup_seed', -1,
+flags.DEFINE_integer('sup_seed', 10,
                      'Integer random seed used for labeled set selection.')
 
 flags.DEFINE_integer('sup_per_batch', 10,
                      'Number of labeled samples per class per batch.')
 
-flags.DEFINE_integer('unsup_batch_size', 100,
+flags.DEFINE_integer('unsup_batch_size', 200,
                      'Number of unlabeled samples per batch.')
 
 flags.DEFINE_integer('emb_size', 128,
                      'Size of the embeddings to learn.')
 
-flags.DEFINE_float('learning_rate', 1e-4, 'Initial learning rate.')
+flags.DEFINE_string('learning_rate_type', 'exp2', 'None: Default, clr: cylic learning rate')
+#flags.DEFINE_string('clr_type', 'clr','exp2', 'None: Default, clr: cylic learning rate')
+flags.DEFINE_float('learning_rate_cycle_step', 200, 'steps to cycle around 2-10 times of steps for 1 epoch')
+
+flags.DEFINE_float('learning_rate', 1e-5, 'Initial learning rate.')
+flags.DEFINE_float('maximum_learning_rate', 1e-3, 'Initial learning rate.')
 
 flags.DEFINE_float('minimum_learning_rate', 1e-6,
                    'Lower bound for learning rate.')
 
 flags.DEFINE_float('decay_factor', 0.33, 'Learning rate decay factor.')
 
-flags.DEFINE_float('decay_steps', 60000,
+flags.DEFINE_float('decay_steps', 10000,
                    'Learning rate decay interval in steps.')
 
-flags.DEFINE_float('visit_weight', 0.0, 'Weight for visit loss.')
+flags.DEFINE_float('visit_weight', 0.2, 'Weight for visit loss.')
 
-flags.DEFINE_string('visit_weight_envelope', None,
+flags.DEFINE_string('visit_weight_envelope', 'linear',
                     'Increase visit weight with an envelope: [None, sigmoid, linear]')
 
 flags.DEFINE_integer('visit_weight_envelope_steps', -1,
@@ -90,16 +101,16 @@ flags.DEFINE_integer('visit_weight_envelope_delay', -1,
                      'Number of steps at which envelope starts. -1 = follow '
                      'walker loss env.')
 
-flags.DEFINE_float('walker_weight', 1.0, 'Weight for walker loss.')
+flags.DEFINE_float('walker_weight', 0.8, 'Weight for walker loss.')
 
-flags.DEFINE_string('walker_weight_envelope', None,
+flags.DEFINE_string('walker_weight_envelope', 'linear',
                     'Increase walker weight with an envelope: [None, sigmoid, linear]')
 
 flags.DEFINE_integer('walker_weight_envelope_steps', 100,
                      'Number of steps (after delay) at which envelope '
                      'saturates.')
 
-flags.DEFINE_integer('walker_weight_envelope_delay', 3000,
+flags.DEFINE_integer('walker_weight_envelope_delay', 10000,
                      'Number of steps at which envelope starts.')
 
 flags.DEFINE_float('logit_weight', 1.0, 'Weight for logit loss.')
@@ -115,18 +126,18 @@ flags.DEFINE_integer('new_size', 0,
 flags.DEFINE_integer('virtual_embeddings', 0,
                      'How many virtual embeddings to add.')
 
-flags.DEFINE_string('logdir', '/tmp/semisup', 'Training log path.')
+flags.DEFINE_string('logdir', '/data/semisup/opt_reproduce/imagenetLV_super_10x10_usup_4000_w_08_v_02_l_10_usb_200_supb_10_embs_128_stl10_model_seed_10_clrexp2_lr_envelope_aug_all_00_bnemb_1', 'Training log path.') #_01_=0.1
 
-flags.DEFINE_integer('save_summaries_secs', 150,
+flags.DEFINE_integer('save_summaries_secs', 100,
                      'How often should summaries be saved (in seconds).')
 
-flags.DEFINE_integer('save_interval_secs', 300,
+flags.DEFINE_integer('save_interval_secs', 100,
                      'How often should checkpoints be saved (in seconds).')
 
 flags.DEFINE_integer('log_every_n_steps', 100,
                      'Logging interval for slim training loop.')
 
-flags.DEFINE_integer('max_checkpoints', 5,
+flags.DEFINE_integer('max_checkpoints', 1,
                      'Maximum number of recent checkpoints to keep.')
 
 flags.DEFINE_float('keep_checkpoint_every_n_hours', 5.0,
@@ -195,19 +206,16 @@ def apply_envelope(type, step, final_weight, growing_steps, delay):
 
     return tf.clip_by_value(value, 0., final_weight)
 
+def train_test(FLAGS):
 
-def main(argv):
-    del argv
-
-    # Load data.
     dataset_tools = import_module('tools.' + FLAGS.dataset)
     train_images, train_labels = dataset_tools.get_data('train')
     if FLAGS.target_dataset is not None:
         target_dataset_tools = import_module('tools.' + FLAGS.target_dataset)
-        train_images_unlabeled, _ = target_dataset_tools.get_data(
+        train_images_unlabeled, train_images_label = target_dataset_tools.get_data(
             FLAGS.target_dataset_split)
     else:
-        train_images_unlabeled, _ = dataset_tools.get_data('unlabeled')
+        train_images_unlabeled, train_images_label = dataset_tools.get_data('unlabeled')
 
     architecture = getattr(semisup.architectures, FLAGS.architecture)
 
@@ -227,6 +235,10 @@ def main(argv):
             'Chose more unlabeled samples ({})'
             ' than there are in the '
             'unlabeled batch ({}).'.format(FLAGS.unsup_samples, num_unlabeled))
+        #TODO: make smaple slections per classs :done
+        #unsup_by_label = semisup.sample_by_label(train_images_unlabeled, train_images_label,
+        #                                       FLAGS.unsup_samples/num_labels+num_labels, num_labels,
+        #                                       seed)
 
         rng = np.random.RandomState(seed=seed)
         train_images_unlabeled = train_images_unlabeled[rng.choice(
@@ -243,6 +255,8 @@ def main(argv):
             t_sup_images, t_sup_labels = semisup.create_per_class_inputs(
                 sup_by_label, FLAGS.sup_per_batch)
 
+            #print(t_sup_images.shape)
+            #with tf.Session() as sess: print (t_sup_images.eval().shape)
             if FLAGS.remove_classes:
                 t_sup_images = tf.slice(
                     t_sup_images, [0, 0, 0, 0],
@@ -259,17 +273,16 @@ def main(argv):
             # Apply augmentation
             if FLAGS.augmentation:
                 # TODO(haeusser) generalize augmentation
-                def _random_invert(inputs, _):
-                    randu = tf.random_uniform(
-                        shape=[FLAGS.sup_per_batch * num_labels], minval=0.,
-                        maxval=1.,
-                        dtype=tf.float32)
-                    randu = tf.cast(tf.less(randu, 0.5), tf.float32)
-                    randu = tf.expand_dims(randu, 1)
-                    randu = tf.expand_dims(randu, 1)
-                    randu = tf.expand_dims(randu, 1)
-                    inputs = tf.cast(inputs, tf.float32)
-                    return tf.abs(inputs - 255 * randu)
+                def _random_invert(inputs1, _):
+                    inputs = tf.cast(inputs1, tf.float32)
+                    inputs = tf.image.adjust_brightness(inputs, tf.random_uniform((1, 1), 0.0, 0.5))
+                    inputs = tf.image.random_contrast(inputs, 0.3, 1)
+                    # inputs = tf.image.per_image_standardization(inputs)
+                    inputs = tf.image.random_hue(inputs, 0.05)
+                    inputs = tf.image.random_saturation(inputs, 0.5, 1.1)
+                    def f1(): return tf.abs(inputs) #annotations
+                    def f2(): return tf.abs(inputs1)
+                    return tf.cond(tf.less(tf.random_uniform([], 0.0, 1),0.5), f1,f2)
 
                 augmentation_function = _random_invert
             else:
@@ -290,70 +303,84 @@ def main(argv):
 
             # Compute embeddings and logits.
             t_sup_emb = model.image_to_embedding(t_sup_images)
-            t_unsup_emb = model.image_to_embedding(t_unsup_images)
-
-            # Add virtual embeddings.
-            if FLAGS.virtual_embeddings:
-                t_sup_emb = tf.concat([
-                    t_sup_emb, semisup.create_virt_emb(FLAGS.virtual_embeddings,
-                                                       FLAGS.emb_size)
-                ], 0)
-
-                if not FLAGS.remove_classes:
-                    # need to add additional labels for virtual embeddings
-                    t_sup_labels = tf.concat(0, [
-                        t_sup_labels,
-                        (num_labels + tf.range(1, FLAGS.virtual_embeddings + 1,
-                                               tf.int64))
-                        * tf.ones([FLAGS.virtual_embeddings], tf.int64)
-                    ])
 
             t_sup_logit = model.embedding_to_logit(t_sup_emb)
 
             # Add losses.
-            visit_weight_envelope_steps = (
-                FLAGS.walker_weight_envelope_steps
-                if FLAGS.visit_weight_envelope_steps == -1
-                else FLAGS.visit_weight_envelope_steps)
-            visit_weight_envelope_delay = (
-                FLAGS.walker_weight_envelope_delay
-                if FLAGS.visit_weight_envelope_delay == -1
-                else FLAGS.visit_weight_envelope_delay)
-            visit_weight = apply_envelope(
-                            type=FLAGS.visit_weight_envelope,
-                            step=model.step,
-                            final_weight=FLAGS.visit_weight,
-                            growing_steps=visit_weight_envelope_steps,
-                            delay=visit_weight_envelope_delay)
-            walker_weight = apply_envelope(
-                                type=FLAGS.walker_weight_envelope,
-                                step=model.step,
-                                final_weight=FLAGS.walker_weight,
-                                growing_steps=FLAGS.walker_weight_envelope_steps,  # pylint:disable=line-too-long
-                                delay=FLAGS.walker_weight_envelope_delay)
-            tf.summary.scalar('Weights_Visit', visit_weight)
-            tf.summary.scalar('Weights_Walker', walker_weight)
-
             if FLAGS.unsup_samples != 0:
+                t_unsup_emb = model.image_to_embedding(t_unsup_images)
+                visit_weight_envelope_steps = (
+                    FLAGS.walker_weight_envelope_steps
+                    if FLAGS.visit_weight_envelope_steps == -1
+                    else FLAGS.visit_weight_envelope_steps)
+                visit_weight_envelope_delay = (
+                    FLAGS.walker_weight_envelope_delay
+                    if FLAGS.visit_weight_envelope_delay == -1
+                    else FLAGS.visit_weight_envelope_delay)
+                visit_weight = apply_envelope(
+                                type=FLAGS.visit_weight_envelope,
+                                step=model.step,
+                                final_weight=FLAGS.visit_weight,
+                                growing_steps=visit_weight_envelope_steps,
+                                delay=visit_weight_envelope_delay)
+                walker_weight = apply_envelope(
+                                    type=FLAGS.walker_weight_envelope,
+                                    step=model.step,
+                                    final_weight=FLAGS.walker_weight,
+                                    growing_steps=FLAGS.walker_weight_envelope_steps,  # pylint:disable=line-too-long
+                                    delay=FLAGS.walker_weight_envelope_delay)
+                tf.summary.scalar('Weights_Visit', visit_weight)
+                tf.summary.scalar('Weights_Walker', walker_weight)
+
                 model.add_semisup_loss(t_sup_emb,
-                                       t_unsup_emb,
-                                       t_sup_labels,
-                                       visit_weight=visit_weight,
-                                       walker_weight=walker_weight)
+                                           t_unsup_emb,
+                                           t_sup_labels,
+                                           visit_weight=visit_weight,
+                                           walker_weight=walker_weight)
 
             model.add_logit_loss(t_sup_logit,
                                  t_sup_labels,
                                  weight=FLAGS.logit_weight)
 
             # Set up learning rate
-            t_learning_rate = tf.maximum(
-                tf.train.exponential_decay(
-                    FLAGS.learning_rate,
-                    model.step,
-                    FLAGS.decay_steps,
-                    FLAGS.decay_factor,
-                    staircase=True),
-                FLAGS.minimum_learning_rate)
+            if FLAGS.learning_rate_type is None:
+                t_learning_rate = tf.maximum(
+                    tf.train.exponential_decay(
+                        FLAGS.learning_rate,
+                        model.step,
+                        FLAGS.decay_steps,
+                        FLAGS.decay_factor,
+                        staircase=True),
+                    FLAGS.minimum_learning_rate)
+            elif FLAGS.learning_rate_type=='exp2':
+                t_learning_rate = tf.maximum(
+                    cyclic_learning_rate(
+                        model.step,
+                        FLAGS.minimum_learning_rate,
+                        FLAGS.maximum_learning_rate,
+                        FLAGS.learning_rate_cycle_step,
+                        mode='exp_range',
+                        gamma=0.9999),
+                    cyclic_learning_rate(
+                        model.step,
+                        FLAGS.minimum_learning_rate,
+                        FLAGS.learning_rate,
+                        FLAGS.learning_rate_cycle_step,
+                        mode='triangular',
+                        gamma=0.9994)
+                )
+
+            else:
+                t_learning_rate = tf.maximum(
+                    cyclic_learning_rate(
+                        model.step,
+                        FLAGS.minimum_learning_rate,
+                        FLAGS.learning_rate,
+                        FLAGS.learning_rate_cycle_step,
+                        mode='triangular',
+                        gamma=0.9994),
+                    FLAGS.minimum_learning_rate
+                )
 
             # Create training operation and start the actual training loop.
             train_op = model.create_train_op(t_learning_rate)
@@ -365,7 +392,7 @@ def main(argv):
             saver = tf_saver.Saver(max_to_keep=FLAGS.max_checkpoints,
                                    keep_checkpoint_every_n_hours=FLAGS.keep_checkpoint_every_n_hours)  # pylint:disable=line-too-long
 
-            slim.learning.train(
+            final_loss=slim.learning.train(
                 train_op,
                 logdir=FLAGS.logdir + '/train',
                 save_summaries_secs=FLAGS.save_summaries_secs,
@@ -378,8 +405,123 @@ def main(argv):
                 trace_every_n_steps=1000,
                 saver=saver,
                 number_of_steps=FLAGS.max_steps,
-            )
+                #session_wrapper=tf_debug.LocalCLIDebugWrapperSession
+                )
 
+            print (final_loss)
+    return final_loss
+
+def Eval(FLAGS):
+    # Get dataset-related toolbox.
+    dataset_tools = import_module('semisup.tools.' + FLAGS.dataset)
+    architecture = getattr(semisup.architectures, FLAGS.architecture)
+
+    num_labels = dataset_tools.NUM_LABELS
+    image_shape = dataset_tools.IMAGE_SHAPE
+
+    test_images, test_labels = dataset_tools.get_data('test')
+
+    graph = tf.Graph()
+    with graph.as_default():
+
+        # Set up input pipeline.
+        #image, label = tf.train.slice_input_producer([test_images, test_labels])
+        #images, labels = tf.train.batch(
+        #    [image, label], batch_size=FLAGS.eval_batch_size)
+        images, labels = semisup.create_input(test_images,test_labels,FLAGS.eval_batch_size)
+
+        images = tf.cast(images, tf.float32)
+        labels = tf.cast(labels, tf.int64)
+
+        # Reshape if necessary.
+        if FLAGS.new_size > 0:
+            new_shape = [FLAGS.new_size, FLAGS.new_size, 3]
+        else:
+            new_shape = None
+
+        # Create function that defines the network.
+        model_function = partial(
+            architecture,
+            is_training=False,
+            new_shape=new_shape,
+            img_shape=image_shape,
+            augmentation_function=None,
+            image_summary=False,
+            emb_size=FLAGS.emb_size)
+
+
+        # Set up semisup model.
+        model = semisup.SemisupModel(
+            model_function,
+            num_labels,
+            image_shape,
+            test_in=images)
+
+        # Add moving average variables.
+        for var in tf.get_collection('moving_vars'):
+            tf.add_to_collection(tf.GraphKeys.MOVING_AVERAGE_VARIABLES, var)
+        for var in slim.get_model_variables():
+            tf.add_to_collection(tf.GraphKeys.MOVING_AVERAGE_VARIABLES, var)
+
+        # Get prediction tensor from semisup model.
+        predictions = tf.argmax(model.test_logit, 1)
+
+        # Accuracy metric for summaries.
+        names_to_values, names_to_updates = slim.metrics.aggregate_metric_map({
+            'Accuracy': slim.metrics.streaming_accuracy(predictions, labels),
+        })
+        for name, value in names_to_values.iteritems():
+            tf.summary.scalar(name, value)
+
+        # Run the actual evaluation loop.
+        num_batches = math.ceil(len(test_labels) / float(FLAGS.eval_batch_size))
+
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        #checkpoint_path = tf.train.latest_checkpoint(FLAGS.logdir + '/train')
+        metric_values = slim.evaluation.evaluation_loop(
+            master=FLAGS.master,
+            checkpoint_dir=FLAGS.logdir +'/'+str(FLAGS.unsup_samples)+ '/train',
+            logdir=FLAGS.logdir +'/'+str(FLAGS.unsup_samples)+ '/eval',
+            num_evals=num_batches,
+            eval_op=names_to_updates.values(),
+            eval_interval_secs=1,
+            session_config=config,
+            timeout=2,
+            final_op=names_to_values.values()
+        )
+        #print (metric_values)
+    return metric_values
+
+def hyperopt_train_test(FLAGS):
+
+    loss = train_test(FLAGS=FLAGS)
+    acc = Eval(FLAGS=FLAGS)
+    print (loss)
+    print (acc)
+
+    return acc[0],loss
+def f(params):
+    FLAGS.unsup_samples = params['unsup_samples']
+    print ('unsup samples',FLAGS.unsup_samples)
+    acc, loss = hyperopt_train_test(FLAGS=FLAGS)
+    return {'acc':acc, 'loss': 1-acc ,'loss_real':loss, 'status': STATUS_OK, 'params':params}
+
+def main(argv):
+    '''space4dt = {
+        'unsup_samples': hp.choice('unsup_samples', [x for x in numpy.arange(200, 6010, 1000,dtype=numpy.int32)]),
+    }
+
+    trials = Trials()
+    best = fmin(f, space4dt, algo=hyperopt.tpe.suggest, max_evals=5, trials=trials)
+    print (best)
+    for trial in trials.trials[:]:
+        print (trial)
+    '''
+
+
+
+    pass
 
 if __name__ == '__main__':
     tf.logging.set_verbosity(tf.logging.INFO)

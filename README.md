@@ -9,7 +9,7 @@ In order to reproduce the results from the paper, please use the architectures a
 
 Before you get started, please make sure to add the following to your `~/.bashrc`:
 ```
-export PYTHONPATH=/path/to/learning_by_association:$PYTHONPATH
+export PYTHONPATH=/data/workspace/association_orig/learning_by_association:$PYTHONPATH
 ```
 
 Copy the file `semisup/tools/data_dirs.py.template` to `semisup/tools/data_dirs.py`, adapt the paths and .gitignore this file.
